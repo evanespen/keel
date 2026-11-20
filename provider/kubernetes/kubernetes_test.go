@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/keel-hq/keel/approvals"
 	"github.com/keel-hq/keel/extension/notification"
@@ -1988,6 +1989,30 @@ func TestTrackedImagesPollTagsAfterCurrent(t *testing.T) {
 			}
 			if imgs[0].PollTagsAfterCurrent != tt.want {
 				t.Errorf("expected PollTagsAfterCurrent=%t, got %t", tt.want, imgs[0].PollTagsAfterCurrent)
+			}
+		})
+	}
+}
+
+func TestGetMinAgeFromMeta(t *testing.T) {
+	tests := []struct {
+		name        string
+		labels      map[string]string
+		annotations map[string]string
+		want        time.Duration
+	}{
+		{"unset", nil, nil, 0},
+		{"annotation", nil, map[string]string{"keel.sh/minAge": "72h"}, 72 * time.Hour},
+		{"label", map[string]string{"keel.sh/minAge": "30m"}, nil, 30 * time.Minute},
+		{"case insensitive key", nil, map[string]string{"keel.sh/minage": "1h30m"}, 90 * time.Minute},
+		{"annotation wins over label", map[string]string{"keel.sh/minAge": "1h"}, map[string]string{"keel.sh/minAge": "2h"}, 2 * time.Hour},
+		{"invalid is ignored", nil, map[string]string{"keel.sh/minAge": "3 days"}, 0},
+		{"negative is ignored", nil, map[string]string{"keel.sh/minAge": "-1h"}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getMinAgeFromMeta(tt.labels, tt.annotations); got != tt.want {
+				t.Errorf("want %s, got %s", tt.want, got)
 			}
 		})
 	}

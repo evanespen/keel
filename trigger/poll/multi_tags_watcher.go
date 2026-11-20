@@ -1,6 +1,8 @@
 package poll
 
 import (
+	"time"
+
 	"github.com/keel-hq/keel/extension/credentialshelper"
 	"github.com/keel-hq/keel/provider"
 	"github.com/keel-hq/keel/registry"
@@ -145,6 +147,17 @@ func (j *WatchRepositoryTagsJob) computeEvents(tags []string) ([]types.Event, er
 	platformCache := make(map[string][]types.Platform)
 	platformErrorCache := make(map[string]error)
 	diagnosedCandidates := make(map[string]bool)
+	createdCache := make(map[string]createdResult)
+
+	// When any related workload uses keel.sh/minAge, events carry the image
+	// build time so the provider can enforce each workload's own delay.
+	needCreated := false
+	for _, ti := range allRelatedTrackedImages {
+		if ti.MinAge > 0 {
+			needCreated = true
+			break
+		}
+	}
 
 	for _, trackedImage := range allRelatedTrackedImages {
 		if trackedImage.PlatformErr != types.PlatformErrorNone || len(trackedImage.Platforms) == 0 {
@@ -181,6 +194,21 @@ func (j *WatchRepositoryTagsJob) computeEvents(tags []string) ([]types.Event, er
 			// When using tags watcher we rely completely on tag names to deal with updates.
 			if trackedImage.Image.Tag() == tag {
 				break
+			}
+
+			if trackedImage.MinAge > 0 {
+				ok, wait := j.oldEnough(trackedImage, tag, createdCache)
+				if !ok {
+					if wait > 0 {
+						log.WithFields(log.Fields{
+							"image":    trackedImage.Image.Repository(),
+							"tag":      tag,
+							"min_age":  trackedImage.MinAge,
+							"eligible": time.Now().Add(wait).Format(time.RFC3339),
+						}).Info("trigger.poll.WatchRepositoryTagsJob: skipping candidate because it is younger than keel.sh/minAge")
+					}
+					continue
+				}
 			}
 
 			platforms, resolved := platformCache[tag]
@@ -226,6 +254,13 @@ func (j *WatchRepositoryTagsJob) computeEvents(tags []string) ([]types.Event, er
 					},
 					TriggerName: types.TriggerTypePoll.String(),
 				}
+				if needCreated {
+					// A read failure leaves Created zero: workloads with
+					// minAge then refuse the event (fail closed).
+					if res := j.createdOf(trackedImage, tag, createdCache); res.err == nil {
+						event.Repository.Created = res.created
+					}
+				}
 				events = append(events, event)
 				break
 			}
@@ -238,6 +273,52 @@ func (j *WatchRepositoryTagsJob) computeEvents(tags []string) ([]types.Event, er
 	}).Debug("trigger.poll.WatchRepositoryTagsJob: events: ", events)
 
 	return events, nil
+}
+
+type createdResult struct {
+	created time.Time
+	err     error
+}
+
+// oldEnough reports whether the image behind tag was built at least
+// trackedImage.MinAge ago. When it is not, wait is the remaining time. When
+// the build time cannot be determined it fails closed (ok=false, wait=0), so
+// an unreadable image is never promoted by a policy that asked for a delay.
+func (j *WatchRepositoryTagsJob) oldEnough(trackedImage *types.TrackedImage, tag string, cache map[string]createdResult) (ok bool, wait time.Duration) {
+	res := j.createdOf(trackedImage, tag, cache)
+	if res.err != nil {
+		log.WithFields(log.Fields{
+			"error": res.err,
+			"image": trackedImage.Image.Repository(),
+			"tag":   tag,
+		}).Warn("trigger.poll.WatchRepositoryTagsJob: skipping candidate because its creation time could not be read (keel.sh/minAge is set)")
+		return false, 0
+	}
+	age := time.Since(res.created)
+	if age < trackedImage.MinAge {
+		return false, trackedImage.MinAge - age
+	}
+	return true, 0
+}
+
+// createdOf reads, and caches per tag, the build time of the image behind tag.
+func (j *WatchRepositoryTagsJob) createdOf(trackedImage *types.TrackedImage, tag string, cache map[string]createdResult) createdResult {
+	if res, cached := cache[tag]; cached {
+		return res
+	}
+	opts := registry.Opts{
+		Registry: trackedImage.Image.Scheme() + "://" + trackedImage.Image.Registry(),
+		Name:     trackedImage.Image.ShortName(),
+		Tag:      tag,
+	}
+	if creds, err := credentialshelper.GetCredentials(trackedImage); err == nil {
+		opts.Username = creds.Username
+		opts.Password = creds.Password
+	}
+	var res createdResult
+	res.created, res.err = j.registryClient.Created(opts)
+	cache[tag] = res
+	return res
 }
 
 func relatedPlatforms(trackedImages []*types.TrackedImage) []types.Platform {

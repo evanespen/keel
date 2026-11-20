@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/keel-hq/keel/approvals"
 	// "github.com/keel-hq/keel/cache/memory"
@@ -56,6 +57,13 @@ type fakeRegistryClient struct {
 	platformErrors    map[string]error
 	platformErr       error
 	platformCalls     []string
+
+	// build times returned by Created(), keyed by tag; defaultCreated (zero
+	// time, i.e. very old) is used for tags that are not listed
+	createdToReturn map[string]time.Time
+	defaultCreated  time.Time
+	createdErr      error
+	createdCalls    []string
 }
 
 func (c *fakeRegistryClient) Get(opts registry.Opts) (*registry.Repository, error) {
@@ -103,6 +111,17 @@ func (c *fakeRegistryClient) Platforms(opts registry.Opts) ([]types.Platform, er
 		return platforms, nil
 	}
 	return []types.Platform{{OS: "linux", Architecture: "amd64"}}, nil
+}
+
+func (c *fakeRegistryClient) Created(opts registry.Opts) (time.Time, error) {
+	c.createdCalls = append(c.createdCalls, opts.Tag)
+	if c.createdErr != nil {
+		return time.Time{}, c.createdErr
+	}
+	if t, ok := c.createdToReturn[opts.Tag]; ok {
+		return t, nil
+	}
+	return c.defaultCreated, nil
 }
 
 // ======== fake provider for testing =======

@@ -301,6 +301,38 @@ polling the same image opts in.
 Known limitation: a newer version pushed *before* the running tag, for example
 while running a backport release, is not seen.
 
+### Waiting before updating to a new image
+
+To avoid rolling out an image the moment it is published (for example to let a
+broken release be pulled or fixed first), set `keel.sh/minAge` to a Go duration:
+
+```yaml
+metadata:
+  annotations:
+    keel.sh/policy: minor
+    keel.sh/trigger: poll
+    keel.sh/minAge: "72h"
+```
+
+An image is only eligible once it was built (the `created` field of its image
+config) at least that long ago. With a semver, glob or regexp policy a candidate
+that is too young is skipped, and Keel updates to the newest tag that is old
+enough. With `force` (a mutable tag such as `latest`), the update is held back
+and retried on each poll until the new image is old enough.
+
+Notes:
+
+* It only applies to the `poll` trigger; webhook events are not delayed.
+* The age is the image build time, not the time it was pushed to the registry.
+* If the build time cannot be read, the update is skipped (fail closed) and a
+  warning is logged.
+* An invalid value (`3 days`, `-1h`) is logged and ignored.
+* For a multi-platform image, the most recent build across platforms is used.
+* The delay is enforced per workload, so several workloads can track the same
+  image with different `minAge` values. The exception is a mutable tag (`force`
+  policy) shared by several workloads: the digest is only picked up once the
+  image is older than the *largest* `minAge` among them.
+
 ### Documentation
 
 Documentation is viewable on the Keel Website:

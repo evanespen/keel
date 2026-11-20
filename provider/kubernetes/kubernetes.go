@@ -319,6 +319,37 @@ func getPollTagsAfterCurrentFromMeta(labels map[string]string, annotations map[s
 	return getBoolFromMeta(types.KeelPollTagsAfterCurrentAnnotation, labels, annotations)
 }
 
+// getMinAgeFromMeta parses keel.sh/minAge. Invalid or negative values are
+// logged and ignored, so a typo never silently blocks or forces updates.
+func getMinAgeFromMeta(labels map[string]string, annotations map[string]string) time.Duration {
+	searchKey := strings.ToLower(types.KeelMinAgeAnnotation)
+
+	var raw string
+	for k, v := range labels {
+		if strings.ToLower(k) == searchKey {
+			raw = v
+		}
+	}
+	for k, v := range annotations {
+		if strings.ToLower(k) == searchKey {
+			raw = v
+		}
+	}
+	if raw == "" {
+		return 0
+	}
+
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		log.WithFields(log.Fields{
+			"error": err,
+			"value": raw,
+		}).Error("provider.kubernetes: invalid keel.sh/minAge, expected a positive Go duration such as 72h, ignoring")
+		return 0
+	}
+	return d
+}
+
 func getBoolFromMeta(key string, labels map[string]string, annotations map[string]string) bool {
 
 	searchKey := strings.ToLower(key)
@@ -422,6 +453,7 @@ func (p *Provider) TrackedImages() ([]*types.TrackedImage, error) {
 		platforms, platformErr := p.platforms.Resolve(gr)
 		runningDigests := p.runningDigests.Resolve(gr)
 		pollTagsAfterCurrent := getPollTagsAfterCurrentFromMeta(labels, annotations)
+		minAge := getMinAgeFromMeta(labels, annotations)
 
 		for _, img := range images {
 			ref, err := image.Parse(img)
@@ -458,6 +490,7 @@ func (p *Provider) TrackedImages() ([]*types.TrackedImage, error) {
 				Policy:         plc,
 
 				PollTagsAfterCurrent: pollTagsAfterCurrent,
+				MinAge:               minAge,
 			})
 		}
 	}
@@ -720,6 +753,24 @@ func (p *Provider) createUpdatePlansForTrigger(repo *types.Repository, triggerNa
 		}
 
 		if shouldUpdateDeployment {
+			// keel.sh/minAge is enforced per workload here, because a poll event is
+			// shared by every workload tracking the image and the watcher cannot
+			// know which of them may take it. An event whose build time is unknown
+			// is refused (fail closed).
+			if minAge := getMinAgeFromMeta(labels, annotations); minAge > 0 && triggerName == types.TriggerTypePoll.String() {
+				if repo.Created.IsZero() || time.Since(repo.Created) < minAge {
+					log.WithFields(log.Fields{
+						"deployment": resource.Name,
+						"kind":       resource.Kind(),
+						"namespace":  resource.Namespace,
+						"tag":        repo.Tag,
+						"min_age":    minAge,
+						"created":    repo.Created,
+					}).Info("provider.kubernetes: skipping update because the image is younger than keel.sh/minAge")
+					continue
+				}
+			}
+
 			updated.CurrentDigest = p.currentDigest(resource, repo, updated)
 			if repo.PlatformVerified {
 				platforms, resolutionErr := p.platforms.Resolve(resource)

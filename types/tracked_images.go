@@ -2,6 +2,8 @@ package types
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/keel-hq/keel/util/image"
 )
 
@@ -32,6 +34,9 @@ type TrackedImage struct {
 	// PollTagsAfterCurrent makes polling list only the tags pushed after
 	// the running tag instead of every tag of the repository.
 	PollTagsAfterCurrent bool `json:"pollTagsAfterCurrent"`
+	// MinAge is the minimum age (time since the image was built) a candidate
+	// image must reach before it is eligible for an update. Zero disables it.
+	MinAge time.Duration `json:"minAge"`
 }
 
 // Platform identifies the operating system and CPU architecture required by a

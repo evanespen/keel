@@ -1,6 +1,8 @@
 package poll
 
 import (
+	"time"
+
 	"github.com/keel-hq/keel/extension/credentialshelper"
 	"github.com/keel-hq/keel/provider"
 	"github.com/keel-hq/keel/registry"
@@ -62,6 +64,34 @@ func (j *WatchTagJob) Run() {
 
 	// checking whether image digest has changed
 	if j.details.digest != currentDigest {
+		// With keel.sh/minAge, hold back a freshly built image. The event is
+		// shared by every workload tracking this tag, so the largest delay of
+		// those workloads is used here (each workload's own delay is then
+		// enforced by the provider). The stored digest is left untouched so
+		// the change is detected again, and the update submitted, on the
+		// first poll after the delay has elapsed.
+		var created time.Time
+		if min := j.maxMinAge(); min > 0 {
+			var err error
+			created, err = j.registryClient.Created(registryOpts)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"error": err,
+					"image": j.details.trackedImage.Image.String(),
+				}).Warn("trigger.poll.WatchTagJob: skipping update because the image creation time could not be read (keel.sh/minAge is set)")
+				return
+			}
+			if age := time.Since(created); age < min {
+				log.WithFields(log.Fields{
+					"image":      j.details.trackedImage.Image.String(),
+					"new_digest": currentDigest,
+					"min_age":    min,
+					"eligible":   time.Now().Add(min - age).Format(time.RFC3339),
+				}).Info("trigger.poll.WatchTagJob: skipping update because the image is younger than keel.sh/minAge")
+				return
+			}
+		}
+
 		// updating digest
 		j.details.digest = currentDigest
 
@@ -70,6 +100,8 @@ func (j *WatchTagJob) Run() {
 				Name:   j.details.trackedImage.Image.Repository(),
 				Tag:    j.details.trackedImage.Image.Tag(),
 				Digest: currentDigest,
+				// zero unless a workload uses keel.sh/minAge
+				Created: created,
 			},
 			TriggerName: types.TriggerTypePoll.String(),
 		}
@@ -89,4 +121,20 @@ func (j *WatchTagJob) Run() {
 		}
 
 	}
+}
+
+// maxMinAge returns the largest keel.sh/minAge among the poll-tracked
+// workloads that share this watcher's image.
+func (j *WatchTagJob) maxMinAge() time.Duration {
+	max := j.details.trackedImage.MinAge
+	trackedImages, err := j.providers.TrackedImages()
+	if err != nil {
+		return max
+	}
+	for _, ti := range getRelatedTrackedImages(j.details.trackedImage, trackedImages) {
+		if ti.MinAge > max {
+			max = ti.MinAge
+		}
+	}
+	return max
 }

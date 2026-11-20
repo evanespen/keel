@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/keel-hq/keel/registry/docker"
 	"github.com/keel-hq/keel/types"
@@ -36,6 +37,8 @@ type Client interface {
 	Digest(opts Opts) (string, error)
 	Digests(opts Opts) ([]string, error)
 	Platforms(opts Opts) ([]types.Platform, error)
+	// Created returns the build time of the image behind opts.Tag.
+	Created(opts Opts) (time.Time, error)
 }
 
 // New - new registry client
@@ -265,4 +268,27 @@ INIT_CLIENT:
 		return nil, err
 	}
 	return platforms, nil
+}
+
+// Created returns the build time of a tagged image, read from its image config.
+func (c *DefaultClient) Created(opts Opts) (time.Time, error) {
+	if opts.Tag == "" {
+		return time.Time{}, ErrTagNotSupplied
+	}
+
+INIT_CLIENT:
+	hub, err := c.getRegistryClient(opts.Registry, opts.Username, opts.Password)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	created, err := hub.ManifestCreated(opts.Name, opts.Tag)
+	if err != nil {
+		if strings.Contains(err.Error(), "server gave HTTP response to HTTPS client") && strings.HasPrefix(opts.Registry, "https://") && c.insecure {
+			opts.Registry = strings.Replace(opts.Registry, "https://", "http://", 1)
+			goto INIT_CLIENT
+		}
+		return time.Time{}, err
+	}
+	return created, nil
 }

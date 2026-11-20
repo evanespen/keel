@@ -48,6 +48,11 @@ const KeelInitContainerAnnotation = "keel.sh/initContainers"
 // tags in push order. Defaults to false.
 const KeelPollTagsAfterCurrentAnnotation = "keel.sh/pollTagsAfterCurrent"
 
+// KeelMinAgeAnnotation - label or annotation that delays updates until the
+// candidate image has been built at least this long ago (Go duration, e.g.
+// "72h"). Only applies to polling triggers. Defaults to no delay.
+const KeelMinAgeAnnotation = "keel.sh/minAge"
+
 // KeelImageVolumeAnnotation - label or annotation to track OCI image volume
 // sources (spec.volumes[].image.reference), defaults to false for backward
 // compatibility. Requires Kubernetes 1.31+ and container-runtime image-volume
@@ -105,6 +110,9 @@ type Repository struct {
 	Digest           string     `json:"digest"` // optional digest field
 	Platforms        []Platform `json:"platforms,omitempty" swaggerignore:"true"`
 	PlatformVerified bool       `json:"platformVerified,omitempty" swaggerignore:"true"`
+	// Created is the build time of the image, set by poll triggers when a
+	// workload sharing the image uses keel.sh/minAge. Zero when unknown.
+	Created time.Time `json:"created,omitempty" swaggerignore:"true"`
 }
 
 // String gives you [host/]team/repo[:tag] identifier
